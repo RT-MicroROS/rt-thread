@@ -34,34 +34,48 @@ jobs:
         id: changed_files
         run: |
           # 通过 GitHub API 获取 PR 的变更文件列表
-          changed_files=$(curl -s \
-            -H "Authorization: Bearer ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" | \
-            jq -r '.[].filename')  # 使用 jq 提取文件名
+          response=$(curl -s -w "%{http_code}" -o response.json  \
+          -H "Authorization: Bearer ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}" \
+          "https://api.github.com/repos/${{  github.repository  }}/pulls/${{ github.event.pull_request.number  }}/files")
           
-          echo "$changed_files" | grep -v '^MAINTAINERS$' > changed_files.txt
-      # - name: Parse MAINTAINERS file
-      #   id: parse_maintainer
-      #   run: |
-      #     # 使用 AWK 解析 MAINTAINERS 文件格式：
-      #     # 提取 tag（标签）、path（路径）和 owners（维护者 GitHub ID）
-      #     awk '
-      #       /^tag:/ { 
-      #         tag = substr($0, index($0, $2))  # 提取标签内容
-      #       }
-      #       /^path:/ { 
-      #         path = substr($0, index($0, $2))  # 提取路径内容
-      #       }
-      #       /^owners:/ {
-      #         owners = substr($0, index($0, $2))  # 提取维护者信息
-      #         split(owners, parts, /[()]/)       # 拆分出 GitHub ID（括号内内容）
-      #         github_ids = ""
-      #         for (i=2; i<=length(parts); i+=2) {
-      #           github_ids = github_ids "@" parts[i] " "  # 拼接为 @user 格式
-      #         }
-      #         print tag "|" path "|" github_ids
-      #       }
-      #     ' MAINTAINERS > tag_data.csv
+          # 检查 HTTP 状态码
+          http_code=$(echo "$response" | tail -n1)
+          if [ "$http_code" -ne 200 ]; then
+            echo "GitHub API 请求失败，状态码: $http_code"
+            cat response.json 
+            exit 1
+          fi
+
+          echo "API 响应内容:"
+          echo "$response"
+          
+          # 从保存的文件中提取文件名
+          changed_files=$(jq -r '.[].filename' response.json) 
+          
+          echo "$changed_files" | grep -v '^MAINTAINERS$' > changed_files.txt 
+          
+      - name: Parse MAINTAINERS file
+        id: parse_maintainer
+        run: |
+          # 使用 AWK 解析 MAINTAINERS 文件格式：
+          # 提取 tag（标签）、path（路径）和 owners（维护者 GitHub ID）
+          awk '
+            /^tag:/ { 
+              tag = substr($0, index($0, $2))  # 提取标签内容
+            }
+            /^path:/ { 
+              path = substr($0, index($0, $2))  # 提取路径内容
+            }
+            /^owners:/ {
+              owners = substr($0, index($0, $2))  # 提取维护者信息
+              split(owners, parts, /[()]/)       # 拆分出 GitHub ID（括号内内容）
+              github_ids = ""
+              for (i=2; i<=length(parts); i+=2) {
+                github_ids = github_ids "@" parts[i] " "  # 拼接为 @user 格式
+              }
+              print tag "|" path "|" github_ids
+            }
+          ' MAINTAINERS > tag_data.csv
       - name: Generate reviewers list
         id: generate_reviewers
         run: |
