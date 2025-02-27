@@ -32,6 +32,8 @@ jobs:
 
       - name: Get changed files
         id: changed_files
+        env:
+          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           # 通过 GitHub API 获取 PR 的变更文件列表
           response=$(curl -s -w "%{http_code}" -o response.json  \
@@ -56,6 +58,8 @@ jobs:
           
       - name: Parse MAINTAINERS file
         id: parse_maintainer
+        env:
+          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           # 使用 AWK 解析 MAINTAINERS 文件格式：
           # 提取 tag（标签）、path（路径）和 owners（维护者 GitHub ID）
@@ -78,6 +82,8 @@ jobs:
           ' MAINTAINERS > tag_data.csv
       - name: Generate reviewers list
         id: generate_reviewers
+        env:
+          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           # 根据变更文件路径匹配维护者规则
           rm -f triggered_reviewers.txt
@@ -89,8 +95,11 @@ jobs:
           done < tag_data.csv
           # 去重处理
           awk 'NF && !seen[$0]++' triggered_reviewers.txt > unique_reviewers.txt
+          
       - name: Get approval status
         id: get_approval
+        env:
+          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
           reviewers=$(cat unique_reviewers.txt | tr '\n' '|')
@@ -128,8 +137,11 @@ jobs:
               fi
             done < unique_reviewers.txt
           } > review_status.md
+          
       - name: Generate review data
         id: generate_review
+        env:
+          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
           {
@@ -167,8 +179,11 @@ jobs:
             echo "> ℹ️ **刷新CI状态操作需要具备仓库写入权限。**"
             echo "> ℹ️ **Refresh CI status operation requires repository Write permission.**"
           } > review_data.md
+          
       - name: Post/Update comment
         id: post_comment
+        env:
+          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           # 查找现有的 bot 评论
           existing_comment=$(curl -s \
