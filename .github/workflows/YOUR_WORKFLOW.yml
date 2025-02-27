@@ -40,28 +40,28 @@ jobs:
             jq -r '.[].filename')  # 使用 jq 提取文件名
           
           echo "$changed_files" | grep -v '^MAINTAINERS$' > changed_files.txt
-      - name: Parse MAINTAINERS file
-        id: parse_maintainer
-        run: |
-          # 使用 AWK 解析 MAINTAINERS 文件格式：
-          # 提取 tag（标签）、path（路径）和 owners（维护者 GitHub ID）
-          awk '
-            /^tag:/ { 
-              tag = substr($0, index($0, $2))  # 提取标签内容
-            }
-            /^path:/ { 
-              path = substr($0, index($0, $2))  # 提取路径内容
-            }
-            /^owners:/ {
-              owners = substr($0, index($0, $2))  # 提取维护者信息
-              split(owners, parts, /[()]/)       # 拆分出 GitHub ID（括号内内容）
-              github_ids = ""
-              for (i=2; i<=length(parts); i+=2) {
-                github_ids = github_ids "@" parts[i] " "  # 拼接为 @user 格式
-              }
-              print tag "|" path "|" github_ids
-            }
-          ' MAINTAINERS > tag_data.csv
+      # - name: Parse MAINTAINERS file
+      #   id: parse_maintainer
+      #   run: |
+      #     # 使用 AWK 解析 MAINTAINERS 文件格式：
+      #     # 提取 tag（标签）、path（路径）和 owners（维护者 GitHub ID）
+      #     awk '
+      #       /^tag:/ { 
+      #         tag = substr($0, index($0, $2))  # 提取标签内容
+      #       }
+      #       /^path:/ { 
+      #         path = substr($0, index($0, $2))  # 提取路径内容
+      #       }
+      #       /^owners:/ {
+      #         owners = substr($0, index($0, $2))  # 提取维护者信息
+      #         split(owners, parts, /[()]/)       # 拆分出 GitHub ID（括号内内容）
+      #         github_ids = ""
+      #         for (i=2; i<=length(parts); i+=2) {
+      #           github_ids = github_ids "@" parts[i] " "  # 拼接为 @user 格式
+      #         }
+      #         print tag "|" path "|" github_ids
+      #       }
+      #     ' MAINTAINERS > tag_data.csv
       - name: Generate reviewers list
         id: generate_reviewers
         run: |
