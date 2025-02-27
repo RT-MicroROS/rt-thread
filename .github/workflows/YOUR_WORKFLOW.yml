@@ -35,6 +35,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
+          echo "Repository: ${{ github.repository  }}"
+          echo "PR Number: ${{ github.event.pull_request.number  }}"
+        
           # 通过 GitHub API 获取 PR 的变更文件列表
           response=$(curl -s -w "%{http_code}" -o response.json  \
           -H "Authorization: Bearer ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}" \
