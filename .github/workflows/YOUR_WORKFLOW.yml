@@ -37,6 +37,8 @@ jobs:
         run: |
           echo "Repository: ${{ github.repository  }}"
           echo "PR Number: ${{ github.event.pull_request.number  }}"
+
+          echo "Token: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}"
         
           # 通过 GitHub API 获取 PR 的变更文件列表
           response=$(curl -s -w "%{http_code}" -o response.json  \
