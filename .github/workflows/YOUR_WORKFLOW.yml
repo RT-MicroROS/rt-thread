@@ -1,19 +1,19 @@
 #
 # Copyright (c) 2006-2025, RT-Thread Development Team
 #
-# SPDX-License-Identifier: Apache-2.0 
+# SPDX-License-Identifier: Apache-2.0
 #
 # Change Logs:
 # Date           Author       Notes
 # 2025-01-21     kurisaW      Initial version
 #
 
-# Script Function Description: Assign PR reviews based on the MAINTAINERS list.  
+# Script Function Description: Assign PR reviews based on the MAINTAINERS list.
 
 name: Auto Review Assistant
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
   issue_comment:
@@ -25,46 +25,27 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      contents: read
+      contents: write
+      discussions: write
+    env:
+      SUPER_SECRET: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Get changed files
         id: changed_files
-        env:
-          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
-          echo "Repository: ${{ github.repository  }}"
-          echo "PR Number: ${{ github.event.pull_request.number  }}"
-
-          echo "Token: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}"
-        
           # 通过 GitHub API 获取 PR 的变更文件列表
-          response=$(curl -s -w "%{http_code}" -o response.json  \
-          -H "Authorization: Bearer ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}" \
-          "https://api.github.com/repos/${{  github.repository  }}/pulls/${{ github.event.pull_request.number  }}/files")
+          changed_files=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" | \
+            jq -r '.[].filename')  # 使用 jq 提取文件名
           
-          # 检查 HTTP 状态码
-          http_code=$(echo "$response" | tail -n1)
-          if [ "$http_code" -ne 200 ]; then
-            echo "GitHub API 请求失败，状态码: $http_code"
-            cat response.json 
-            exit 1
-          fi
+          echo "$changed_files" | grep -v '^MAINTAINERS$' > changed_files.txt
 
-          echo "API 响应内容:"
-          echo "$response"
-          
-          # 从保存的文件中提取文件名
-          changed_files=$(jq -r '.[].filename' response.json) 
-          
-          echo "$changed_files" | grep -v '^MAINTAINERS$' > changed_files.txt 
-          
       - name: Parse MAINTAINERS file
         id: parse_maintainer
-        env:
-          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           # 使用 AWK 解析 MAINTAINERS 文件格式：
           # 提取 tag（标签）、path（路径）和 owners（维护者 GitHub ID）
@@ -85,10 +66,9 @@ jobs:
               print tag "|" path "|" github_ids
             }
           ' MAINTAINERS > tag_data.csv
+
       - name: Generate reviewers list
         id: generate_reviewers
-        env:
-          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           # 根据变更文件路径匹配维护者规则
           rm -f triggered_reviewers.txt
@@ -100,11 +80,9 @@ jobs:
           done < tag_data.csv
           # 去重处理
           awk 'NF && !seen[$0]++' triggered_reviewers.txt > unique_reviewers.txt
-          
+
       - name: Get approval status
         id: get_approval
-        env:
-          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
           reviewers=$(cat unique_reviewers.txt | tr '\n' '|')
@@ -113,6 +91,7 @@ jobs:
           comments=$(curl -s \
             -H "Authorization: Bearer ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments")
+
           echo '#!/bin/bash' > approval_data.sh
           echo 'declare -A approvals=()' >> approval_data.sh
           
@@ -130,6 +109,7 @@ jobs:
           # 加载审查数据并生成状态报告
           chmod +x approval_data.sh
           source ./approval_data.sh
+
           {
             echo "---"
             echo "### 📊 Current Review Status (Last Updated: $current_time)"
@@ -142,17 +122,16 @@ jobs:
               fi
             done < unique_reviewers.txt
           } > review_status.md
-          
+
       - name: Generate review data
         id: generate_review
-        env:
-          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
           {
             # 生成审查分配信息
             echo "## 📌 Code Review Assignment"
             echo ""
+
             while IFS='|' read -r tag path reviewers; do
               if grep -qE "^$path(/|$)" changed_files.txt; then
                 echo "### 🏷️ Tag: $tag"
@@ -169,6 +148,7 @@ jobs:
             done < tag_data.csv
             # 插入审查状态
             cat review_status.md
+
             echo "---"
             echo "### 📝 Review Instructions"
             echo ""
@@ -184,11 +164,9 @@ jobs:
             echo "> ℹ️ **刷新CI状态操作需要具备仓库写入权限。**"
             echo "> ℹ️ **Refresh CI status operation requires repository Write permission.**"
           } > review_data.md
-          
+
       - name: Post/Update comment
         id: post_comment
-        env:
-          GH_TOKEN: ${{ secrets.ACTION_TOKEN_AUTO_REVIEW }}
         run: |
           # 查找现有的 bot 评论
           existing_comment=$(curl -s \
