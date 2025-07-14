@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Change Logs:
+ * Change Logs: 
  * Date           Author       Notes
  * 2021-06-01     KyleChan     first version
  */ 
