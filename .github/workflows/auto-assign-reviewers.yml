@@ -95,7 +95,7 @@ jobs:
       - name: Generate reviewers list and tag-file mapping
         id: generate_reviewers
         run: |
-          rm -f triggered_reviewers.txt triggered_tags.txt unique_reviewers.txt unique_tags.txt tag_files_map.json
+          rm -f triggered_reviewers.txt triggered_tags.txt unique_reviewers.txt unique_tags.txt tag_files_map.json tag_reviewers_map.txt
           touch triggered_reviewers.txt triggered_tags.txt unique_reviewers.txt unique_tags.txt
 
           # 1. 读取 tag_data.csv，建立 tag -> [paths], tag -> reviewers
@@ -165,7 +165,14 @@ jobs:
             echo "}"
           } > tag_files_map.json
 
-          # 5. 标记是否有 reviewer
+          # 5. 保存聚合去重后的 reviewers 到 tag_reviewers_map.txt
+          {
+            for tag in "${!tag_reviewers_map[@]}"; do
+              echo "$tag|${tag_reviewers_map[$tag]}"
+            done
+          } > tag_reviewers_map.txt
+
+          # 6. 标记是否有 reviewer
           if [[ -s unique_reviewers.txt ]]; then
             echo "HAS_REVIEWERS=true" >> $GITHUB_OUTPUT
           else
@@ -264,11 +271,11 @@ jobs:
           # 读取 tag->files 映射
           declare -A tag_files_map
           eval "$(jq -r 'to_entries[] | "tag_files_map[\"\(.key)\"]=\"\(.value | join(";"))\"" ' tag_files_map.json)"
-          # 读取 tag->reviewers
+          # 读取 tag->reviewers（只读聚合去重后的结果）
           declare -A tag_reviewers_map
-          while IFS='|' read -r tag paths reviewers; do
+          while IFS='|' read -r tag reviewers; do
             tag_reviewers_map["$tag"]="$reviewers"
-          done < tag_data.csv
+          done < tag_reviewers_map.txt
 
           current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
           {
@@ -278,6 +285,8 @@ jobs:
               reviewers="${tag_reviewers_map[$tag]}"
               # remove trailing spaces
               reviewers=$(echo "$reviewers" | sed 's/[[:space:]]*$//')
+              # 只展示合法的 @xxx 用户
+              reviewers=$(echo "$reviewers" | grep -o '@[A-Za-z0-9_-]\+' | sort -u | tr '\n' ' ')
               echo "### 🏷️ Tag: $tag"
               echo ""
               echo "**Reviewers:** $reviewers   "
