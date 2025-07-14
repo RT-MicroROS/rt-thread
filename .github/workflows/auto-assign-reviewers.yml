@@ -283,13 +283,20 @@ jobs:
             echo ""
             for tag in $unique_tags; do
               reviewers="${tag_reviewers_map[$tag]}"
-              # remove trailing spaces
               reviewers=$(echo "$reviewers" | sed 's/[[:space:]]*$//')
-              # 只展示合法的 @xxx 用户
               reviewers=$(echo "$reviewers" | grep -o '@[A-Za-z0-9_-]\+' | sort -u | tr '\n' ' ')
+              formatted_reviewers=""
+              for r in $reviewers; do
+                if [[ -z "${notified_reviewers[$r]}" ]]; then
+                  formatted_reviewers+="$r "
+                  notified_reviewers[$r]=1
+                else
+                  formatted_reviewers+="${r#@} "
+                fi
+              done
               echo "### 🏷️ Tag: $tag"
               echo ""
-              echo "**Reviewers:** $reviewers   "
+              echo "**Reviewers:** $formatted_reviewers  "
               echo "<details>"
               echo "<summary><b>Changed Files</b> (Click to expand)</summary>"
               echo ""
