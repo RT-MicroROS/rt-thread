@@ -107,7 +107,12 @@ jobs:
             for p in "${path_arr[@]}"; do
               tag_paths_map["$tag"]+="$p;"
             done
-            tag_reviewers_map["$tag"]="$reviewers"
+            # 合并 reviewers，去重，只保留合法格式
+            existing_reviewers="${tag_reviewers_map["$tag"]}"
+            all_reviewers="$existing_reviewers $reviewers"
+            # 只保留 @xxx 格式，去重
+            all_reviewers=$(echo "$all_reviewers" | grep -o '@[A-Za-z0-9_-]\+' | sort -u | tr '\n' ' ')
+            tag_reviewers_map["$tag"]="$all_reviewers"
           done < tag_data.csv
 
           # 2. 针对每个 tag，找出它所有 path 匹配的变更文件
