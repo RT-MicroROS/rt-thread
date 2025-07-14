@@ -66,22 +66,29 @@ jobs:
       - name: Parse MAINTAINERS file
         id: parse_maintainer
         run: |
+          set -euo pipefail
           awk '
-            /^tag:/ { tag = substr($0, index($0, $2)) }
+            BEGIN{ tag=""; paths=""; owners="" }
+            /^tag:/ { 
+                tag = substr($0, index($0, $2)); 
+                paths=""; owners=""
+            }
             /^path:/ {
-              path = substr($0, index($0, $2))
-              gsub(/^[ \t]+|[ \t]+$/, "", path)
-              paths = (paths == "" ? path : paths "|" path)
+                path = substr($0, index($0, $2))
+                gsub(/^[ \t]+|[ \t]+$/, "", path)
+                paths = (paths == "" ? path : paths "|" path)
             }
             /^owners:/ {
-              owners = substr($0, index($0, $2))
-              split(owners, parts, /[()]/)
-              github_ids = ""
-              for (i=2; i<=length(parts); i+=2) {
-                github_ids = github_ids "@" parts[i] " "
-              }
-              print tag "|" paths "|" github_ids
-              paths = ""
+                owners = substr($0, index($0, $2))
+                n = split(owners, parts, /[()]/)
+                github_ids=""
+                for (i=2; i<=n; i+=2) {
+                  id=parts[i]
+                  gsub(/^[ \t@]+|[ \t]+$/, "", id)
+                  if(id != "") github_ids=github_ids "@" id " "
+                }
+                print tag "|" paths "|" github_ids
+                tag=""; paths=""; owners=""
             }
           ' MAINTAINERS > tag_data.csv
 
@@ -103,16 +110,19 @@ jobs:
             tag_reviewers_map["$tag"]="$reviewers"
           done < tag_data.csv
 
-          # 2. 针对每个 tag，找出它所有 path 匹配的变更文件，合并同 tag 的不同 path
+          # 2. 针对每个 tag，找出它所有 path 匹配的变更文件
           declare -A tag_changedfiles_map
           while IFS= read -r changed; do
             for tag in "${!tag_paths_map[@]}"; do
               IFS=';' read -ra tpaths <<< "${tag_paths_map[$tag]}"
               for tpath in "${tpaths[@]}"; do
                 [[ -z "$tpath" ]] && continue
-                # 支持子目录匹配
-                if [[ "$changed" == $tpath* ]]; then
-                  tag_changedfiles_map["$tag"]+="$changed;"
+                if [[ -f "$tpath" ]]; then
+                  # 精确文件名
+                  [[ "$changed" == "$tpath" ]] && tag_changedfiles_map["$tag"]+="$changed;"
+                else
+                  # 目录前缀
+                  [[ "$changed" == $tpath* ]] && tag_changedfiles_map["$tag"]+="$changed;"
                 fi
               done
             done
