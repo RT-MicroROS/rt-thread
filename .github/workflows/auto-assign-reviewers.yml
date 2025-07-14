@@ -42,7 +42,6 @@ jobs:
       - name: Get changed files
         id: changed_files
         run: |
-          set -euo pipefail
           changed_files=$(curl -s \
             "https://api.github.com/repos/${{ github.repository }}/pulls/${{ steps.extract-pr.outputs.PR_NUMBER }}/files" | \
             jq -r '.[].filename')
@@ -95,7 +94,6 @@ jobs:
       - name: Generate reviewers list and tag-file mapping
         id: generate_reviewers
         run: |
-          set -euo pipefail
           rm -f triggered_reviewers.txt triggered_tags.txt unique_reviewers.txt unique_tags.txt tag_files_map.json
           touch triggered_reviewers.txt triggered_tags.txt unique_reviewers.txt unique_tags.txt
 
@@ -118,9 +116,12 @@ jobs:
               IFS=';' read -ra tpaths <<< "${tag_paths_map[$tag]}"
               for tpath in "${tpaths[@]}"; do
                 [[ -z "$tpath" ]] && continue
-                # 目录前缀匹配（支持文件和目录）
-                if [[ "$changed" == "$tpath" ]] || [[ "$changed" == $tpath* ]]; then
-                  tag_changedfiles_map["$tag"]+="$changed;"
+                if [[ -f "$tpath" ]]; then
+                  # 精确文件名
+                  [[ "$changed" == "$tpath" ]] && tag_changedfiles_map["$tag"]+="$changed;"
+                else
+                  # 目录前缀
+                  [[ "$changed" == $tpath* ]] && tag_changedfiles_map["$tag"]+="$changed;"
                 fi
               done
             done
@@ -129,6 +130,7 @@ jobs:
           # 3. 输出合并后的 tag reviewers、tag、并去重
           for tag in "${!tag_changedfiles_map[@]}"; do
             reviewers="${tag_reviewers_map[$tag]}"
+            # 仅输出 @GitHubID（已在上一步awk解析保证）
             echo "$reviewers" | tr -s ' ' '\n' | grep '^@' | sed '/^$/d' >> triggered_reviewers.txt
             echo "$tag" >> triggered_tags.txt
           done
@@ -185,7 +187,6 @@ jobs:
       - name: Get approval status
         id: get_approval
         run: |
-          set -euo pipefail
           current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
           if [[ ! -s unique_reviewers.txt ]]; then
             touch unique_reviewers.txt
@@ -247,7 +248,6 @@ jobs:
         id: generate_review
         if: steps.generate_reviewers.outputs.HAS_REVIEWERS == 'true'
         run: |
-          set -euo pipefail
           unique_tags=""
           if [[ -s unique_tags.txt ]]; then
             unique_tags=$(cat unique_tags.txt | xargs)
@@ -269,7 +269,7 @@ jobs:
           {
             echo "## 📌 Code Review Assignment"
             echo ""
-            for tag in $unique_tags; do
+          for tag in $unique_tags; do
               reviewers="${tag_reviewers_map[$tag]}"
               reviewers=$(echo "$reviewers" | tr -s ' ' '\n' | grep '^@' | paste -sd' ' -)
               reviewers=$(echo "$reviewers" | sed 's/[[:space:]]*$//')
@@ -309,7 +309,6 @@ jobs:
         id: post_comment
         if: steps.generate_reviewers.outputs.HAS_REVIEWERS == 'true'
         run: |
-          set -euo pipefail
           existing_comment=$(curl -s \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments" | \
@@ -333,7 +332,6 @@ jobs:
         id: get_comment_time
         if: steps.generate_reviewers.outputs.HAS_REVIEWERS == 'true'
         run: |
-          set -euo pipefail
           existing_comment=$(curl -s \
             "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments" | \
             jq -r '.[] | select(.user.login == "github-actions[bot]") | {body: .body} | @base64')
