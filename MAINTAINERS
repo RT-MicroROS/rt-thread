@@ -163,10 +163,6 @@ tag: bsp_wch
 path: bsp/wch
 owners: Huanyi Mai(Maihuanyi)<m19825309307@163.com>
 
-tag: components
-path: components
-owners: Huanyi Mai(Maihuanyi)<m19825309307@163.com>
-
 tag: components_driver_can
 path: components/drivers/can
 owners: Liya Huang(wdfk-prog)<1425075683@qq.com>
@@ -179,11 +175,15 @@ tag: components_driver_pm
 path: components/drivers/pm
 owners: Liya Huang(wdfk-prog)<1425075683@qq.com>
 
+tag: components
+path: components
+owners: Yuqiang Wang(kurisaW)<2053731441@qq.com>
+
 tag: components_driver_serial_v2
 path: components/drivers/serial/dev_serial_v2.c
 path: components/drivers/include/drivers/dev_serial_v2.h
 path: examples/utest/testcases/drivers/serial_v2
-owners: Chen Beidou(Ryan-CW-Code)<1831931681@qq.com>
+owners: Yiu Tan(Nedki-L)<825538844@qq.com>
 
 tag: components_driver_spi
 path: components/drivers/spi
@@ -228,5 +228,3 @@ owners: Bingru Zhang(Rbb666)<751061401@qq.com>, Yuqiang Wang(kurisaW)<2053731441
 tag: workflow
 path: .github
 owners: supper thomas(supperthomas)<78900636@qq.com>, Bingru Zhang(Rbb666)<751061401@qq.com>, Yuqiang Wang(kurisaW)<2053731441@qq.com>
-
-
