@@ -39,34 +39,39 @@ jobs:
           sparse-checkout: MAINTAINERS
           persist-credentials: false
 
+      - name: Setup environment
+        run: |
+          mkdir -p tmp
+          touch tmp/changed_files.txt tmp/tag_data.csv tmp/triggered_reviewers.txt \
+                tmp/triggered_tags.txt tmp/unique_reviewers.txt tmp/unique_tags.txt \
+                tmp/tag_files_map.json tmp/review_status.md tmp/review_data.md
+
       - name: Get changed files
         id: changed_files
         run: |
           changed_files=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/pulls/${{ steps.extract-pr.outputs.PR_NUMBER }}/files" | \
             jq -r '.[].filename')
-          echo "$changed_files" > changed_files.txt
+          echo "$changed_files" > tmp/changed_files.txt
           
+          # Get existing comment time if available
           existing_comment=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments" | \
-            jq -r '.[] | select(.user.login == "github-actions[bot]") | {body: .body} | @base64')
-
-          comment_body=""
-          if [[ ! -z "$existing_comment" ]]; then
-            comment_body=$(echo "$existing_comment" | head -1 | base64 -d | jq -r .body | sed -nE 's/.*Last Updated: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC).*/\1/p')
-            comment_time=$(date -d "$comment_body" +%s)
-            echo "${comment_body}"
-            echo "COMMENT_TIME=${comment_time}" >> $GITHUB_OUTPUT
-          else
-            comment_time=""
-            echo "COMMENT_TIME=${comment_time}" >> $GITHUB_OUTPUT
+            jq -r '.[] | select(.user.login == "github-actions[bot]") | .body' | head -1)
+          
+          if [[ -n "$existing_comment" ]]; then
+            comment_time=$(echo "$existing_comment" | grep -oP "Last Updated: \K[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC")
+            if [[ -n "$comment_time" ]]; then
+              timestamp=$(date -d "$comment_time" +%s)
+              echo "COMMENT_TIME=${timestamp}" >> $GITHUB_OUTPUT
+            fi
           fi
-          echo "COMMENT_TIME=${comment_time}"
 
       - name: Parse MAINTAINERS file
         id: parse_maintainer
         run: |
-          set -euo pipefail
           awk '
             BEGIN{ tag=""; paths=""; owners="" }
             /^tag:/ { 
@@ -90,205 +95,178 @@ jobs:
                 print tag "|" paths "|" github_ids
                 tag=""; paths=""; owners=""
             }
-          ' MAINTAINERS > tag_data.csv
+          ' MAINTAINERS > tmp/tag_data.csv
 
       - name: Generate reviewers list and tag-file mapping
         id: generate_reviewers
         run: |
-          rm -f triggered_reviewers.txt triggered_tags.txt unique_reviewers.txt unique_tags.txt tag_files_map.json
-          touch triggered_reviewers.txt triggered_tags.txt unique_reviewers.txt unique_tags.txt
+          # Clean up files
+          > tmp/triggered_reviewers.txt
+          > tmp/triggered_tags.txt
+          > tmp/unique_reviewers.txt
+          > tmp/unique_tags.txt
+          echo "{}" > tmp/tag_files_map.json
 
-          # 1. 读取 tag_data.csv，建立 tag -> [paths], tag -> reviewers
+          # Read tag data
           declare -A tag_paths_map
           declare -A tag_reviewers_map
-
           while IFS='|' read -r tag paths reviewers; do
-            IFS='|' read -ra path_arr <<< "$paths"
-            for p in "${path_arr[@]}"; do
-              tag_paths_map["$tag"]+="$p;"
-            done
+            # Clean up paths and reviewers
+            paths=$(echo "$paths" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            reviewers=$(echo "$reviewers" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            # Store paths and reviewers
+            tag_paths_map["$tag"]="$paths"
             tag_reviewers_map["$tag"]="$reviewers"
-          done < tag_data.csv
+          done < tmp/tag_data.csv
 
-          # 2. 针对每个 tag，找出它所有 path 匹配的变更文件
-          declare -A tag_changedfiles_map
-          while IFS= read -r changed; do
+          # Process changed files
+          while IFS= read -r changed_file; do
+            [[ -z "$changed_file" ]] && continue
+            
             for tag in "${!tag_paths_map[@]}"; do
-              IFS=';' read -ra tpaths <<< "${tag_paths_map[$tag]}"
-              for tpath in "${tpaths[@]}"; do
-                [[ -z "$tpath" ]] && continue
-                if [[ -f "$tpath" ]]; then
-                  # 精确文件名
-                  [[ "$changed" == "$tpath" ]] && tag_changedfiles_map["$tag"]+="$changed;"
+              IFS='|' read -ra paths <<< "${tag_paths_map[$tag]}"
+              
+              for path in "${paths[@]}"; do
+                [[ -z "$path" ]] && continue
+                
+                if [[ -f "$path" ]]; then
+                  # Exact file match
+                  if [[ "$changed_file" == "$path" ]]; then
+                    echo "${tag_reviewers_map[$tag]}" | tr ' ' '\n' | grep -v '^$' >> tmp/triggered_reviewers.txt
+                    echo "$tag" >> tmp/triggered_tags.txt
+                    
+                    # Update tag_files_map.json
+                    jq --arg tag "$tag" --arg file "$changed_file" \
+                      'if .[$tag] then .[$tag] += [$file] else .[$tag] = [$file] end' \
+                      tmp/tag_files_map.json > tmp/tmp_map.json && mv tmp/tmp_map.json tmp/tag_files_map.json
+                    break
+                  fi
                 else
-                  # 目录前缀
-                  [[ "$changed" == $tpath* ]] && tag_changedfiles_map["$tag"]+="$changed;"
+                  # Directory prefix match
+                  if [[ "$changed_file" == "$path"* ]]; then
+                    echo "${tag_reviewers_map[$tag]}" | tr ' ' '\n' | grep -v '^$' >> tmp/triggered_reviewers.txt
+                    echo "$tag" >> tmp/triggered_tags.txt
+                    
+                    # Update tag_files_map.json
+                    jq --arg tag "$tag" --arg file "$changed_file" \
+                      'if .[$tag] then .[$tag] += [$file] else .[$tag] = [$file] end' \
+                      tmp/tag_files_map.json > tmp/tmp_map.json && mv tmp/tmp_map.json tmp/tag_files_map.json
+                    break
+                  fi
                 fi
               done
             done
-          done < changed_files.txt
+          done < tmp/changed_files.txt
 
-          # 3. 输出合并后的 tag reviewers、tag、并去重
-          for tag in "${!tag_changedfiles_map[@]}"; do
-            reviewers="${tag_reviewers_map[$tag]}"
-            echo "$reviewers" | tr -s ' ' '\n' | sed '/^$/d' >> triggered_reviewers.txt
-            echo "$tag" >> triggered_tags.txt
-          done
+          # Create unique lists
+          sort -u tmp/triggered_reviewers.txt > tmp/unique_reviewers.txt
+          sort -u tmp/triggered_tags.txt > tmp/unique_tags.txt
 
-          sort -u triggered_reviewers.txt > unique_reviewers.txt
-          sort -u triggered_tags.txt > unique_tags.txt
-
-          # 4. 输出 tag_files_map.json，格式 { "tag1": ["file1","file2"], ... }
-          {
-            echo "{"
-            first_tag=1
-            for tag in "${!tag_changedfiles_map[@]}"; do
-              [[ $first_tag -eq 0 ]] && echo ","
-              echo -n "  \"${tag}\": ["
-              IFS=';' read -ra files <<< "${tag_changedfiles_map[$tag]}"
-              file_list=""
-              for f in "${files[@]}"; do
-                [[ -z "$f" ]] && continue
-                [[ -n "$file_list" ]] && file_list+=", "
-                file_list+="\"$f\""
-              done
-              echo -n "$file_list"
-              echo -n "]"
-              first_tag=0
-            done
-            echo ""
-            echo "}"
-          } > tag_files_map.json
-
-          # 5. 标记是否有 reviewer
-          if [[ -s unique_reviewers.txt ]]; then
+          # Set output variables
+          if [[ -s tmp/unique_reviewers.txt ]]; then
             echo "HAS_REVIEWERS=true" >> $GITHUB_OUTPUT
           else
             echo "HAS_REVIEWERS=false" >> $GITHUB_OUTPUT
           fi
 
-          echo "=== Matched Tags ==="
-          cat unique_tags.txt
-          echo "=== Matched Reviewers ==="
-          cat unique_reviewers.txt
-          echo "=== Tag-ChangedFiles Map ==="
-          cat tag_files_map.json
-
       - name: Restore Reviewers Cache
-        id: reviewers-cache-restore 
-        if: ${{ steps.changed_files.outputs.COMMENT_TIME != '' }}
+        id: reviewers-cache-restore
         uses: actions/cache/restore@v4
-        with: 
+        with:
           path: |
-            unique_tags_bak.txt
-            unique_reviewers_bak.txt
-          key: ${{ runner.os }}-auto-assign-reviewers-${{ steps.extract-pr.outputs.PR_NUMBER }}-${{ steps.changed_files.outputs.COMMENT_TIME }}
+            tmp/unique_tags_bak.txt
+            tmp/unique_reviewers_bak.txt
+          key: ${{ runner.os }}-auto-assign-reviewers-${{ steps.extract-pr.outputs.PR_NUMBER }}-${{ steps.changed_files.outputs.COMMENT_TIME || 'initial' }}
 
       - name: Get approval status
         id: get_approval
         run: |
           current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
-          if [[ ! -s unique_reviewers.txt ]]; then
-            touch unique_reviewers.txt
-          fi
-          reviewers=$(cat unique_reviewers.txt | tr '\n' '|' | sed 's/|$//')
+          echo "CURRENT_TIME=${current_time}" >> $GITHUB_OUTPUT
+
+          # Get all comments
           comments=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments")
-          echo '#!/bin/bash' > approval_data.sh
-          echo 'declare -A approvals=()' >> approval_data.sh
-          jq -r --arg reviewers "$reviewers" '
-            .[] | 
-            select(.user.login != "github-actions[bot]") |
-            select(.body | test("^\\s*LGTM\\s*$"; "i")) |
-            .user.login as $user |
-            "@\($user)" as $mention |
-            select($mention | inside($reviewers)) |
-            "approvals[\"\($mention)\"]=\"\(.created_at)\"" 
-          ' <<< "$comments" >> approval_data.sh
-          chmod +x approval_data.sh
-          source ./approval_data.sh
-          jq -r --arg reviewers "$reviewers" '
-            .[] | 
-            select(.user.login != "github-actions[bot]") |
-            select(.body | test("^\\s*LGTM\\s*$"; "i")) |
-            .user.login as $user |
-            "@\($user)" as $mention |
-            select($mention | inside($reviewers)) |
-            "\($mention) \(.created_at)" 
-          ' <<< "$comments" >> approval_data.txt
-          notified_users=""
-          if [[ -f unique_reviewers_bak.txt ]]; then
-            notified_users=$(cat unique_reviewers_bak.txt | xargs)
-          else
-            notified_users=""
+
+          # Get notified users from cache if available
+          notified_users=()
+          if [[ -f "tmp/unique_reviewers_bak.txt" ]]; then
+            mapfile -t notified_users < "tmp/unique_reviewers_bak.txt"
           fi
+
+          # Process approvals
           {
             echo "---"
             echo "### 📊 Current Review Status (Last Updated: $current_time)"
+            
             while read -r reviewer; do
-              formatted_reviewers=""
-              for r in $reviewers; do
-                if [[ " ${notified_users[@]} " =~ " $reviewer " ]]; then
-                  formatted_reviewers+="${reviewer#@}"
-                else
-                  formatted_reviewers+="$reviewer"
+              [[ -z "$reviewer" ]] && continue
+              
+              # Check if reviewer has approved
+              approved=$(echo "$comments" | jq -r \
+                ".[] | select(.user.login == \"${reviewer#@}\" and (.body | test(\"^\\\\s*LGTM\\\\s*$\"; \"i\"))) | .created_at" | head -1)
+              
+              # Check if reviewer was notified
+              is_notified="false"
+              for user in "${notified_users[@]}"; do
+                if [[ "$user" == "$reviewer" ]]; then
+                  is_notified="true"
+                  break
                 fi
               done
-              if [[ -n "${approvals[$reviewer]}" ]]; then
-                timestamp=$(date -d "${approvals[$reviewer]}" -u +"%Y-%m-%d %H:%M UTC")
-                echo "- ✅ **$formatted_reviewers** Reviewed On $timestamp"
-              else
-                echo "- ⌛ **$formatted_reviewers** Pending Review"
-              fi
-            done < unique_reviewers.txt
-          } > review_status.md
-          echo "CURRENT_TIME=${current_time}" >> $GITHUB_OUTPUT
 
-      - name: Generate review data (tag merge, no path in comment, changed files summary per tag)
+              if [[ -n "$approved" ]]; then
+                timestamp=$(date -d "$approved" -u +"%Y-%m-%d %H:%M UTC")
+                echo "- ✅ **${reviewer}** Reviewed On $timestamp"
+              else
+                if [[ "$is_notified" == "true" ]]; then
+                  echo "- ⌛ **${reviewer}** (Notified) Pending Review"
+                else
+                  echo "- ⌛ **${reviewer}** Pending Review"
+                fi
+              fi
+            done < tmp/unique_reviewers.txt
+          } > tmp/review_status.md
+
+      - name: Generate review data
         id: generate_review
         if: steps.generate_reviewers.outputs.HAS_REVIEWERS == 'true'
         run: |
-          unique_tags=""
-          if [[ -s unique_tags.txt ]]; then
-            unique_tags=$(cat unique_tags.txt | xargs)
-          fi
-          unique_tags_bak=""
-          if [[ -f unique_tags_bak.txt ]]; then
-            unique_tags_bak=$(cat unique_tags_bak.txt | xargs)
-          fi
-          # 读取 tag->files 映射
-          declare -A tag_files_map
-          eval "$(jq -r 'to_entries[] | "tag_files_map[\"\(.key)\"]=\"\(.value | join(";"))\"" ' tag_files_map.json)"
-          # 读取 tag->reviewers
-          declare -A tag_reviewers_map
-          while IFS='|' read -r tag paths reviewers; do
-            tag_reviewers_map["$tag"]="$reviewers"
-          done < tag_data.csv
-
-          current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
+          current_time="${{ steps.get_approval.outputs.CURRENT_TIME }}"
+          
           {
             echo "## 📌 Code Review Assignment"
             echo ""
-            for tag in $unique_tags; do
-              reviewers="${tag_reviewers_map[$tag]}"
-              # remove trailing spaces
-              reviewers=$(echo "$reviewers" | sed 's/[[:space:]]*$//')
+            
+            # Process each unique tag
+            while read -r tag; do
+              [[ -z "$tag" ]] && continue
+              
+              # Get reviewers for this tag
+              reviewers=$(grep -F "$tag" tmp/tag_data.csv | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+              
+              # Get changed files for this tag
+              changed_files=$(jq -r --arg tag "$tag" '.[$tag] // [] | join("\n- ")' tmp/tag_files_map.json)
+              
               echo "### 🏷️ Tag: $tag"
               echo ""
-              echo "**Reviewers:** $reviewers   "
+              echo "**Reviewers:** $reviewers"
               echo "<details>"
               echo "<summary><b>Changed Files</b> (Click to expand)</summary>"
               echo ""
-              IFS=';' read -ra files <<< "${tag_files_map[$tag]}"
-              for file in "${files[@]}"; do
-                [[ -z "$file" ]] && continue
-                echo "- $file"
-              done
+              if [[ -n "$changed_files" ]]; then
+                echo "- $changed_files"
+              else
+                echo "No changed files found for this tag."
+              fi
               echo ""
               echo "</details>"
               echo ""
-            done
-            cat review_status.md
+            done < tmp/unique_tags.txt
+            
+            cat tmp/review_status.md
             echo "---"
             echo "### 📝 Review Instructions"
             echo ""
@@ -303,43 +281,37 @@ jobs:
             echo ""
             echo "> ℹ️ **刷新CI状态操作需要具备仓库写入权限。**"
             echo "> ℹ️ **Refresh CI status operation requires repository Write permission.**"
-          } > review_data.md
+          } > tmp/review_data.md
 
       - name: Post/Update comment
         id: post_comment
         if: steps.generate_reviewers.outputs.HAS_REVIEWERS == 'true'
         run: |
-          existing_comment=$(curl -s \
+          # Get existing comment ID if any
+          comment_id=$(curl -s \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments" | \
-            jq -r '.[] | select(.user.login == "github-actions[bot]") | {id: .id, body: .body} | @base64')
-          if [[ -n "$existing_comment" ]]; then
-            comment_id=$(echo "$existing_comment" | head -1 | base64 -d | jq -r .id)
-            echo "Updating existing comment $comment_id"
-            response=$(curl -s -X PATCH \
+            jq -r '.[] | select(.user.login == "github-actions[bot]") | .id' | head -1)
+
+          if [[ -n "$comment_id" ]]; then
+            # Update existing comment
+            curl -s -X PATCH \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -d "$(jq -n --arg body "$(cat review_data.md)" '{body: $body}')" \
-              "https://api.github.com/repos/${{ github.repository }}/issues/comments/$comment_id")
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg body "$(cat tmp/review_data.md)" '{body: $body}')" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/comments/$comment_id" > /dev/null
           else
-            echo "Creating new comment"
-            response=$(curl -s -X POST \
+            # Create new comment
+            curl -s -X POST \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -d "$(jq -n --arg body "$(cat review_data.md)" '{body: $body}')" \
-              "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments")
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg body "$(cat tmp/review_data.md)" '{body: $body}')" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments" > /dev/null
           fi
 
-      - name: Get Comment Time
-        id: get_comment_time
-        if: steps.generate_reviewers.outputs.HAS_REVIEWERS == 'true'
-        run: |
-          existing_comment=$(curl -s \
-            "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments" | \
-            jq -r '.[] | select(.user.login == "github-actions[bot]") | {body: .body} | @base64')
-          comment_body="${{ steps.get_approval.outputs.CURRENT_TIME }}"
-          comment_time=$(date -d "$comment_body" +%s)
-          echo "CURRENT_TIME=${comment_time}" >> $GITHUB_OUTPUT
-          cp unique_reviewers.txt unique_reviewers_bak.txt
-          cp unique_tags.txt unique_tags_bak.txt
+          # Save current state to cache
+          cp tmp/unique_reviewers.txt tmp/unique_reviewers_bak.txt
+          cp tmp/unique_tags.txt tmp/unique_tags_bak.txt
 
       - name: Save Reviewers Cache
         id: reviewers-cache-save
@@ -347,6 +319,10 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            unique_tags_bak.txt
-            unique_reviewers_bak.txt
-          key: ${{ runner.os }}-auto-assign-reviewers-${{ steps.extract-pr.outputs.PR_NUMBER }}-${{ steps.get_comment_time.outputs.CURRENT_TIME }}
+            tmp/unique_tags_bak.txt
+            tmp/unique_reviewers_bak.txt
+          key: ${{ runner.os }}-auto-assign-reviewers-${{ steps.extract-pr.outputs.PR_NUMBER }}-${{ steps.changed_files.outputs.COMMENT_TIME || 'initial' }}
+
+      - name: Clean up
+        run: |
+          rm -rf tmp
