@@ -53,7 +53,7 @@ jobs:
 
           comment_body=""
           if [[ ! -z "$existing_comment" ]]; then
-            comment_body=$(echo "$existing_comment" | head -1 | base64 -d | jq -r .body | sed -nE 's/.*Last Updated: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC).*/\1/p')
+            comment_body=$(echo "$existing_comment" | head -1 | base64 -d | jq -r .body | sed -nE 's/.*Last Updated: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} CST).*/\1/p')
             comment_time=$(date -d "$comment_body" +%s)
             echo "${comment_body}"
             echo "COMMENT_TIME=${comment_time}" >> $GITHUB_OUTPUT
@@ -199,7 +199,7 @@ jobs:
       - name: Get approval status
         id: get_approval
         run: |
-          current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
+          current_time=$(TZ='Asia/Shanghai' date +"%Y-%m-%d %H:%M CST")
           if [[ ! -s unique_reviewers.txt ]]; then
             touch unique_reviewers.txt
           fi
@@ -247,7 +247,7 @@ jobs:
                 fi
               done
               if [[ -n "${approvals[$reviewer]}" ]]; then
-                timestamp=$(date -d "${approvals[$reviewer]}" -u +"%Y-%m-%d %H:%M UTC")
+                timestamp=$(TZ='Asia/Shanghai' date -d "${approvals[$reviewer]}" +"%Y-%m-%d %H:%M CST")
                 echo "- ✅ **$formatted_reviewers** Reviewed On $timestamp"
               else
                 echo "- ⌛ **$formatted_reviewers** Pending Review"
@@ -277,7 +277,7 @@ jobs:
             tag_reviewers_map["$tag"]="$reviewers"
           done < tag_reviewers_map.txt
 
-          current_time=$(date -u +"%Y-%m-%d %H:%M UTC")
+          current_time=$(TZ='Asia/Shanghai' date +"%Y-%m-%d %H:%M CST")
           {
             echo "## 📌 Code Review Assignment"
             echo ""
@@ -350,7 +350,7 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments" | \
             jq -r '.[] | select(.user.login == "github-actions[bot]") | {body: .body} | @base64')
           comment_body="${{ steps.get_approval.outputs.CURRENT_TIME }}"
-          comment_time=$(date -d "$comment_body" +%s)
+          comment_time=$(TZ='Asia/Shanghai' date -d "$comment_body" +%s)
           echo "CURRENT_TIME=${comment_time}" >> $GITHUB_OUTPUT
           cp unique_reviewers.txt unique_reviewers_bak.txt
           cp unique_tags.txt unique_tags_bak.txt
