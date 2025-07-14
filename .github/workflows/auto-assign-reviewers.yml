@@ -281,22 +281,26 @@ jobs:
           {
             echo "## 📌 Code Review Assignment"
             echo ""
+            notified_reviewers=""
             for tag in $unique_tags; do
               reviewers="${tag_reviewers_map[$tag]}"
               reviewers=$(echo "$reviewers" | sed 's/[[:space:]]*$//')
               reviewers=$(echo "$reviewers" | grep -o '@[A-Za-z0-9_-]\+' | sort -u | tr '\n' ' ')
               formatted_reviewers=""
               for r in $reviewers; do
-                if [[ -z "${notified_reviewers[$r]}" ]]; then
-                  formatted_reviewers+="$r "
-                  notified_reviewers[$r]=1
-                else
-                  formatted_reviewers+="${r#@} "
-                fi
+                case " $notified_reviewers " in
+                  *" $r "*)
+                    formatted_reviewers+="${r#@} "
+                    ;;
+                  *)
+                    formatted_reviewers+="$r "
+                    notified_reviewers="$notified_reviewers $r"
+                    ;;
+                esac
               done
               echo "### 🏷️ Tag: $tag"
               echo ""
-              echo "**Reviewers:** $formatted_reviewers  "
+              echo "**Reviewers:** $formatted_reviewers  "echo "**Reviewers:** $formatted_reviewers  "
               echo "<details>"
               echo "<summary><b>Changed Files</b> (Click to expand)</summary>"
               echo ""
