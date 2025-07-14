@@ -9,7 +9,10 @@
 # 2025-03-14     hydevcode
 # 2025-05-10     kurisaW      Fixed file existence, cache, and comment time issues
 # 2025-05-11     kurisaW      Fixed missing unique files creation and cache logic
-# 2025-07-14     Optimized    Removed path display and merged same tags
+# 2025-07-14     Grok         Consolidated tags, removed Path field, and listed files in summary
+# 2025-07-14     Grok         Fixed tag consolidation and removed Path field completely
+
+# Script Function Description: Assign PR reviews based on the MAINTAINERS list, consolidating same tags.
 
 name: Auto Review Assistant
 
@@ -65,27 +68,35 @@ jobs:
             comment_time=""
             echo "COMMENT_TIME=${comment_time}" >> $GITHUB_OUTPUT
           fi
-          echo "COMMENT_TIME=${comment_time}"
 
       - name: Parse MAINTAINERS file
         id: parse_maintainer
         run: |
+          # Parse MAINTAINERS file, grouping paths and reviewers by tag
           awk '
-            /^tag:/ { 
-              tag = substr($0, index($0, $2))
-            }
-            /^path:/ {
-              path = substr($0, index($0, $2))
-              gsub(/^[ \t]+|[ \t]+$/, "", path)
-            }
-            /^owners:/ {
-              owners = substr($0, index($0, $2))
-              split(owners, parts, /[()]/)
-              github_ids = ""
-              for (i=2; i<=length(parts); i+=2) {
-                github_ids = github_ids "@" parts[i] " "
+            BEGIN { FS="\n"; RS=""; }
+            {
+              tag=""; paths=""; owners=""
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /^tag:/) {
+                  tag = substr($i, index($i, $2))
+                }
+                if ($i ~ /^path:/) {
+                  path = substr($i, index($i, $2))
+                  gsub(/^[ \t]+|[ \t]+$/, "", path)
+                  paths = paths path "\n"
+                }
+                if ($i ~ /^owners:/) {
+                  owners_line = substr($i, index($i, $2))
+                  split(owners_line, parts, /[()]/)
+                  for (j=2; j<=length(parts); j+=2) {
+                    owners = owners "@" parts[j] " "
+                  }
+                }
               }
-              print tag "|" path "|" github_ids
+              if (tag && paths && owners) {
+                print tag "|" paths "|" owners
+              }
             }
           ' MAINTAINERS > tag_data.csv
 
@@ -95,14 +106,17 @@ jobs:
           rm -f triggered_reviewers.txt triggered_tags.txt unique_reviewers.txt unique_tags.txt
           touch triggered_reviewers.txt triggered_tags.txt unique_reviewers.txt unique_tags.txt
 
-          while IFS='|' read -r tag path reviewers; do
-            escaped_path=$(sed 's/[.[\*^$]/\\&/g' <<< "$path")
-            
-            if grep -qE "^$escaped_path(/.*)*" changed_files.txt; then
-              echo "$reviewers" | tr -s ' ' '\n' | sed '/^$/d' >> triggered_reviewers.txt
-              echo "$tag" >> triggered_tags.txt
-              echo "Matched: $path → $tag"
-            fi
+          while IFS='|' read -r tag paths reviewers; do
+            echo "$paths" | while IFS= read -r path; do
+              if [[ -n "$path" ]]; then
+                escaped_path=$(sed 's/[.[\*^$]/\\&/g' <<< "$path")
+                if grep -qE "^$escaped_path(/.*)*" changed_files.txt; then
+                  echo "$reviewers" | tr -s ' ' '\n' | sed '/^$/d' >> triggered_reviewers.txt
+                  echo "$tag" >> triggered_tags.txt
+                  echo "Matched: $path → $tag"
+                fi
+              fi
+            done
           done < tag_data.csv
 
           sort -u triggered_reviewers.txt > unique_reviewers.txt
@@ -120,10 +134,10 @@ jobs:
           cat unique_reviewers.txt
 
       - name: Restore Reviewers Cache
-        id: reviewers-cache-restore 
+        id: reviewers-cache-restore
         if: ${{ steps.changed_files.outputs.COMMENT_TIME != '' }}
         uses: actions/cache/restore@v4
-        with: 
+        with:
           path: |
             unique_tags_bak.txt
             unique_reviewers_bak.txt
@@ -173,28 +187,17 @@ jobs:
           notified_users=""
           if [[ -f unique_reviewers_bak.txt ]]; then
             notified_users=$(cat unique_reviewers_bak.txt | xargs)
-          else
-            notified_users=""
           fi
 
           {
             echo "---"
             echo "### 📊 Current Review Status (Last Updated: $current_time)"
             while read -r reviewer; do
-              formatted_reviewers=""
-              for r in $reviewers; do
-                if [[ " ${notified_users[@]} " =~ " $reviewer " ]]; then
-                    formatted_reviewers+="${reviewer#@}"
-                else
-                    formatted_reviewers+="$reviewer"
-                fi
-              done
-            
               if [[ -n "${approvals[$reviewer]}" ]]; then
                 timestamp=$(date -d "${approvals[$reviewer]}" -u +"%Y-%m-%d %H:%M UTC")
-                echo "- ✅ **$formatted_reviewers** Reviewed On $timestamp"
+                echo "- ✅ **${reviewer#@}** Reviewed On $timestamp"
               else
-                echo "- ⌛ **$formatted_reviewers** Pending Review"
+                echo "- ⌛ **${reviewer#@}** Pending Review"
               fi
             done < unique_reviewers.txt
           } > review_status.md
@@ -205,11 +208,11 @@ jobs:
         id: generate_review
         if: steps.generate_reviewers.outputs.HAS_REVIEWERS == 'true'
         run: |
-          # 创建一个关联数组来存储每个tag对应的文件列表
+          # 创建一个关联数组来存储每个tag对应的文件列表和reviewers
           declare -A tag_files_map=()
           declare -A tag_reviewers_map=()
 
-          # 首先收集所有匹配的文件
+          # 首先收集所有匹配的文件和reviewers
           while IFS='|' read -r tag path reviewers; do
             escaped_path=$(sed 's/[.[\*^$]/\\&/g' <<< "$path")
             matched_files=$(grep -E "^$escaped_path(/.*)*" changed_files.txt || true)
@@ -219,9 +222,10 @@ jobs:
               if [[ -z "${tag_files_map[$tag]}" ]]; then
                 tag_files_map[$tag]=""
               fi
+              # 添加换行符并追加匹配的文件
               tag_files_map[$tag]+=$'\n'"$matched_files"
               
-              # 存储reviewers
+              # 存储reviewers（只保存第一个匹配的reviewers）
               if [[ -z "${tag_reviewers_map[$tag]}" ]]; then
                 tag_reviewers_map[$tag]="$reviewers"
               fi
@@ -241,7 +245,7 @@ jobs:
               echo "<details>"
               echo "<summary><b>Changed Files</b> (Click to expand)</summary>"
               echo ""
-              # 去重并格式化文件列表
+              # 去重、排序并格式化文件列表
               echo "${tag_files_map[$tag]}" | sort -u | sed '/^$/d' | sed 's/^/- /'
               echo ""
               echo "</details>"
@@ -279,27 +283,23 @@ jobs:
           if [[ -n "$existing_comment" ]]; then
             comment_id=$(echo "$existing_comment" | head -1 | base64 -d | jq -r .id)
             echo "Updating existing comment $comment_id"
-            response=$(curl -s -X PATCH \
+            curl -s -X PATCH \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -d "$(jq -n --arg body "$(cat review_data.md)" '{body: $body}')" \
-              "https://api.github.com/repos/${{ github.repository }}/issues/comments/$comment_id")
+              "https://api.github.com/repos/${{ github.repository }}/issues/comments/$comment_id"
           else
             echo "Creating new comment"
-            response=$(curl -s -X POST \
+            curl -s -X POST \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -d "$(jq -n --arg body "$(cat review_data.md)" '{body: $body}')" \
-              "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments")
+              "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments"
           fi
 
       - name: Get Comment Time
         id: get_comment_time
         if: steps.generate_reviewers.outputs.HAS_REVIEWERS == 'true'
         run: |
-          existing_comment=$(curl -s \
-            "https://api.github.com/repos/${{ github.repository }}/issues/${{ steps.extract-pr.outputs.PR_NUMBER }}/comments" | \
-            jq -r '.[] | select(.user.login == "github-actions[bot]") | {body: .body} | @base64')
-          comment_body="${{ steps.get_approval.outputs.CURRENT_TIME }}"
-          comment_time=$(date -d "$comment_body" +%s)
+          comment_time=$(date -d "${{ steps.get_approval.outputs.CURRENT_TIME }}" +%s)
           echo "CURRENT_TIME=${comment_time}" >> $GITHUB_OUTPUT
           cp unique_reviewers.txt unique_reviewers_bak.txt
           cp unique_tags.txt unique_tags_bak.txt
